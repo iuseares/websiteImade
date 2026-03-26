@@ -2,12 +2,12 @@ const routes = [
   {
     name: "Pride",
     file: "/files/pride.pdf",
-    source: "https://witchculttranslation.com/2018/08/23/rezero-if-oboreru/"
+    source: "https://witchculttranslation.com/wp-content/uploads/2019/02/ayamatsu-april-fools-2017.pdf"
   },
   {
     name: "Wrath",
     file: "/files/wrath.pdf",
-    source: "https://witchculttranslation.com/wp-content/uploads/2019/02/ayamatsu-april-fools-2017.pdf"
+    source: "https://witchculttranslation.com/2018/08/23/rezero-if-oboreru/"
   },
   {
     name: "Sloth",

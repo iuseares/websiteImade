@@ -33,24 +33,41 @@ const routes = [
 
 const fileList = document.getElementById("file-list");
 
+function createActionLink(text, href, className) {
+  const link = document.createElement("a");
+  link.className = className;
+  link.href = href;
+  link.textContent = text;
+  return link;
+}
+
 function createRouteItem(route) {
-  const item = document.createElement("div");
+  const item = document.createElement("article");
   item.className = "route-item";
 
-  const downloadLink = document.createElement("a");
-  downloadLink.className = "route-link";
-  downloadLink.href = route.file;
-  downloadLink.download = "";
-  downloadLink.textContent = route.name;
+  const name = document.createElement("span");
+  name.className = "route-name";
+  name.textContent = route.name;
 
-  const sourceLink = document.createElement("a");
-  sourceLink.className = "source-link";
-  sourceLink.href = route.source;
+  const actions = document.createElement("div");
+  actions.className = "route-actions";
+
+  const readLink = createActionLink("Read", route.file, "route-link");
+  readLink.target = "_blank";
+  readLink.rel = "noopener noreferrer";
+  readLink.setAttribute("aria-label", `Read ${route.name} IF PDF`);
+
+  const downloadLink = createActionLink("Download", route.file, "route-link");
+  downloadLink.download = "";
+  downloadLink.setAttribute("aria-label", `Download ${route.name} IF PDF`);
+
+  const sourceLink = createActionLink("Source", route.source, "source-link");
   sourceLink.target = "_blank";
   sourceLink.rel = "noopener noreferrer";
-  sourceLink.textContent = "source";
+  sourceLink.setAttribute("aria-label", `Open source for ${route.name} IF`);
 
-  item.append(downloadLink, sourceLink);
+  actions.append(readLink, downloadLink, sourceLink);
+  item.append(name, actions);
   return item;
 }
 

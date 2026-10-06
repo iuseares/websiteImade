@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>AniList export · iuseares</title>
+  <link rel="icon" href="/files/kyoko.png">
+  <style>
+    :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; background: #000; color: #f2f2f2; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 72px 24px; }
+    main { max-width: 520px; margin: auto; }
+    h1 { font-size: 1.5rem; font-weight: 500; margin: 0 0 16px; }
+    p { color: #aaa; line-height: 1.6; }
+    form { margin-top: 32px; }
+    label { display: block; font-size: .9rem; margin-bottom: 10px; }
+    input { width: 100%; padding: 14px; background: #111; border: 1px solid #444; border-radius: 6px; color: #fff; font: inherit; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    button, .download { border: 1px solid #ddd; border-radius: 6px; padding: 12px 18px; font: inherit; font-size: .95rem; cursor: pointer; background: #eee; color: #111; text-decoration: none; }
+    button:hover, .download:hover { background: #fff; }
+    button:disabled { cursor: wait; opacity: .55; }
+    #cancel { background: transparent; color: #ccc; border-color: #444; }
+    :focus-visible { outline: 2px solid #83bfff; outline-offset: 4px; }
+    #status { min-height: 26px; margin-top: 24px; overflow-wrap: anywhere; }
+    #status[data-error="true"] { color: #ffacac; }
+    .note { font-size: .82rem; color: #888; margin-top: 30px; }
+    .download { display: inline-block; margin-top: 4px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 480px) { body { padding: 44px 20px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>AniList export</h1>
+  <p>Download your anime and manga lists together as a JSON file.</p>
+  <form id="export-form">
+    <label for="username">AniList username</label>
+    <input id="username" name="username" placeholder="Your username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="100" required aria-describedby="privacy">
+    <div class="actions">
+      <button id="export-button" type="submit">Export JSON</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+    </div>
+  </form>
+  <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+  <a id="download" class="download" hidden>Download JSON</a>
+  <p class="note">Includes every public list status, custom lists, scores (out of 10), progress, rereads / rewatches, notes, dates, titles, genres and tags. Manga exports also include volume progress.</p>
+  <p class="note" id="privacy">No login needed. Private profiles and private entries cannot be exported here. Your browser reads directly from AniList; this site does not receive or store your list.</p>
+  <noscript><p>Enable JavaScript to export your lists.</p></noscript>
+</main>
+<script>
+'use strict';
+const API = 'https://graphql.anilist.co';
+const USER_QUERY = 'query ExportUser($name: String!) { User(name: $name) { id name } }';
+// The downloaded data.anime / data.manga structure matches the original export.
+function listQuery(type) {
+  const manga = type === 'MANGA';
+  return `query ExportList($userId: Int!, $chunk: Int!) {
+    MediaListCollection(userId: $userId, type: ${type}, chunk: $chunk, perChunk: 500) {
+      hasNextChunk
+      lists {
+        name status isCustomList
+        entries {
+          score(format: POINT_10_DECIMAL) status progress ${manga ? 'progressVolumes' : ''} repeat notes
+          startedAt { year month day }
+          completedAt { year month day }
+          media {
+            id title { romaji english } format
+            ${manga ? 'chapters volumes' : 'episodes'}
+            genres tags { name rank }
+          }
+        }
+      }
+    }
+  }`;
+}
+const form = document.querySelector('#export-form');
+const input = document.querySelector('#username');
+const button = document.querySelector('#export-button');
+const cancel = document.querySelector('#cancel');
+const status = document.querySelector('#status');
+const download = document.querySelector('#download');
+let controller = null;
+let downloadUrl = null;
+function report(message, error = false) {
+  status.textContent = message;
+  status.dataset.error = String(error);
+}
+function clearDownload() {
+  download.hidden = true;
+  download.removeAttribute('href');
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = null;
+}
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+async function request(query, variables, signal) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    signal.throwIfAborted();
+    const timeout = new AbortController();
+    const abort = () => timeout.abort(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(() => timeout.abort(), 30000);
+    let response, payload;
+    try {
+      response = await fetch(API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ query, variables }), signal: timeout.signal,
+        credentials: 'omit', referrerPolicy: 'no-referrer'
+      });
+      if (response.status !== 429) {
+        try { payload = await response.json(); }
+        catch {
+          if (timeout.signal.aborted) throw new Error('AniList took too long to respond. Please try again.');
+          throw new Error('AniList returned an unreadable response. It may be temporarily unavailable or blocking this connection.');
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      if (timeout.signal.aborted) throw new Error('AniList took too long to respond. Please try again.');
+      if (error instanceof TypeError) throw new Error('Could not reach AniList. Check your connection and try again.');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+    }
+    if (response.status === 429) {
+      if (attempt === 2) throw new Error('AniList is rate limiting requests. Please try again in a minute.');
+      const header = response.headers.get('Retry-After');
+      const seconds = header && /^\d+$/.test(header) ? Number(header) : 60;
+      if (seconds > 120) throw new Error('AniList is busy. Please try again in a few minutes.');
+      report(`AniList rate limit reached. Retrying in ${seconds} seconds…`);
+      await delay(Math.max(1, seconds) * 1000, signal);
+      continue;
+    }
+    if (response.status === 404) throw new Error('No public AniList profile found. Check the username and profile privacy.');
+    if (!response.ok || payload.errors?.length) {
+      const detail = payload.errors?.map(error => error.message).filter(Boolean).join(' ');
+      throw new Error(detail || `AniList request failed (${response.status}). Please try again.`);
+    }
+    if (!payload.data) throw new Error('AniList returned no data. Please try again.');
+    return payload.data;
+  }
+}
+async function getList(userId, type, signal) {
+  const groups = new Map();
+  for (let chunk = 1; ; chunk++) {
+    report(`Fetching ${type === 'ANIME' ? 'anime' : 'manga'} lists${chunk > 1 ? ` (part ${chunk})` : ''}…`);
+    const data = await request(listQuery(type), { userId, chunk }, signal);
+    const collection = data.MediaListCollection;
+    if (!collection || !Array.isArray(collection.lists) || typeof collection.hasNextChunk !== 'boolean') {
+      throw new Error('AniList returned an incomplete list. Nothing has been downloaded; please try again.');
+    }
+    for (const list of collection.lists) {
+      if (!list || !Array.isArray(list.entries)) throw new Error('AniList returned an incomplete list. Please try again.');
+      const key = JSON.stringify([list.name, list.status, list.isCustomList]);
+      if (!groups.has(key)) groups.set(key, { name: list.name, entries: new Map() });
+      const group = groups.get(key);
+      for (const entry of list.entries) {
+        if (!entry?.media?.id) throw new Error('AniList returned an incomplete entry. Please try again.');
+        group.entries.set(entry.media.id, entry);
+      }
+    }
+    if (!collection.hasNextChunk) break;
+    if (chunk >= 1000) throw new Error('AniList pagination did not finish. Please try again later.');
+    await delay(700, signal);
+  }
+  return { lists: Array.from(groups.values(), group => ({ name: group.name, entries: [...group.entries.values()] })) };
+}
+function countEntries(collection) {
+  return new Set(collection.lists.flatMap(list => list.entries.map(entry => entry.media.id))).size;
+}
+input.addEventListener('input', () => { clearDownload(); report(''); });
+cancel.addEventListener('click', () => controller?.abort());
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (controller) return;
+  const name = input.value.trim();
+  if (!name) { report('Enter your AniList username.', true); input.focus(); return; }
+  clearDownload();
+  controller = new AbortController();
+  const signal = controller.signal;
+  button.disabled = true;
+  input.disabled = true;
+  cancel.hidden = false;
+  form.setAttribute('aria-busy', 'true');
+  try {
+    report('Finding your AniList profile…');
+    const { User: user } = await request(USER_QUERY, { name }, signal);
+    if (!user?.id) throw new Error('No public AniList profile found. Check the username and profile privacy.');
+    const anime = await getList(user.id, 'ANIME', signal);
+    const manga = await getList(user.id, 'MANGA', signal);
+    signal.throwIfAborted();
+    const exported = { data: { anime, manga } };
+    downloadUrl = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' }));
+    download.href = downloadUrl;
+    const safeName = user.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'user';
+    download.download = `anilist-${safeName}-${new Date().toISOString().slice(0, 10)}.json`;
+    download.hidden = false;
+    report(`Ready: ${countEntries(anime)} anime and ${countEntries(manga)} manga / novels for ${user.name}.`);
+    download.click();
+  } catch (error) {
+    clearDownload();
+    report(signal.aborted ? 'Export cancelled.' : error.message || 'Export failed. Please try again.', !signal.aborted);
+  } finally {
+    controller = null;
+    button.disabled = false;
+    input.disabled = false;
+    cancel.hidden = true;
+    form.removeAttribute('aria-busy');
+  }
+});
+window.addEventListener('pagehide', () => { controller?.abort(); });
+</script>
+</body>
+</html>
